@@ -8,6 +8,13 @@ Item {
   property string helperPath: Quickshell.env("HOME") + "/.config/omarchy/plugins/" + moduleName + "/bin/display-manager"
   property string lastTopology: ""
   property string pendingTopology: ""
+  // A profile that fails to apply is retried a few times, then left alone
+  // until the set of connected displays changes. Every attempt modesets all
+  // outputs twice (apply, then restore), so retrying on each 4 s tick keeps
+  // the screens blanking for as long as the topology stays the same.
+  property int maxAttempts: 3
+  property string failedTopology: ""
+  property int failedAttempts: 0
 
   function checkTopology() {
     if (!topologyProc.running) {
@@ -27,6 +34,7 @@ Item {
       onStreamFinished: {
         var value = String(text || "").trim()
         if (!value || value === root.lastTopology) return
+        if (value === root.failedTopology && root.failedAttempts >= root.maxAttempts) return
         if (matchProc.running) return
         root.pendingTopology = value
         matchProc.command = [root.helperPath, "profiles-match"]
@@ -53,9 +61,21 @@ Item {
     onExited: function(exitCode) {
       if (exitCode === 0 && outputValid) {
         root.lastTopology = root.pendingTopology
+        root.failedTopology = ""
+        root.failedAttempts = 0
       } else {
         var detail = String(matchError.text || "").trim()
         console.warn("Display profile match failed" + (detail ? ": " + detail : ""))
+        if (root.failedTopology === root.pendingTopology) {
+          root.failedAttempts += 1
+        } else {
+          root.failedTopology = root.pendingTopology
+          root.failedAttempts = 1
+        }
+        if (root.failedAttempts >= root.maxAttempts) {
+          console.warn("Display profile failed " + root.failedAttempts + " times; not retrying until the connected displays change")
+          Quickshell.execDetached(["omarchy-notification-send", "-g", "󰍺", "Display profile not applied", "Gave up after " + root.failedAttempts + " attempts"])
+        }
       }
       root.pendingTopology = ""
     }
